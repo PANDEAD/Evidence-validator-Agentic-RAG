@@ -1,7 +1,13 @@
+# Python
 __pycache__/
+*.pyc
 .venv/
 .env
 
-/data/pdfs/*
-/data/indices/*
-/out/*
+
+.DS_Store
+
+# Data folders (ignore contents)
+data/pdfs/*
+data/indices/*
+out/*
