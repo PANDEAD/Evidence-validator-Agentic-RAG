@@ -9,5 +9,13 @@ __pycache__/
 
 # Data folders (ignore contents)
 data/pdfs/*
+!data/pdfs/.gitkeep
+
 data/indices/*
+!data/indices/.gitkeep
+
 out/*
+!out/.gitkeep
+ragenv311/
+~/.cache/torch/
+src/agents/orchestrator_ui.py

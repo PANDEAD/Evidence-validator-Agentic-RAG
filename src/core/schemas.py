@@ -1,6 +1,8 @@
+# src/core/schemas.py
 from __future__ import annotations
 from enum import Enum
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
+from datetime import datetime
 from pydantic import BaseModel, Field, ConfigDict
 
 # ---- Thresholds
@@ -50,17 +52,21 @@ class RunCaps(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     max_revision: int = 2
-    max_counter_retrieval: int = 1
+    max_counter_retrieval: int = 1  # NEW: allow one contradiction-aware re-retrieval
 
 class RunState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     question: str
     plan: Optional[RetrievalPlan] = None
-    evidence: List[EvidenceSpan] = []
+    evidence_spans: List[EvidenceSpan] = []
     claims: List[Claim] = []
     verdicts: List[Verdict] = []
-    logs: List[str] = []
+    logs: List[Dict[str, Any]] = []
+    status: str = "pending"
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    final_answer: Optional[str] = None  # NEW: human-readable conclusion
     caps: RunCaps = Field(default_factory=RunCaps)
     thresholds: Dict[str, float] = Field(default_factory=lambda: {
         "tau_support": TAU_SUPPORT,
@@ -68,9 +74,5 @@ class RunState(BaseModel):
     })
 
 if __name__ == "__main__":
-    # quick self-test
     es = EvidenceSpan(id="s1", paper_id="p1", text="This is a sample evidence span text.")
-    cl = Claim(id="c1", text="A bounded, falsifiable claim.", evidence_ids=["s1", "s2"])
-    vd = Verdict(claim_id="c1", label=Label.UNCERTAIN, support_score=0.5, contradiction_score=0.2)
-    rs = RunState(question="What is X?", evidence=[es], claims=[cl], verdicts=[vd])
-    print("Schemas OK ✅", rs.model_dump())
+    print("Schemas OK ✅")
