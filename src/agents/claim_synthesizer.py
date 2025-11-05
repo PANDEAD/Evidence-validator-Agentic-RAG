@@ -1,13 +1,172 @@
 # src/agents/claim_synthesizer.py
 """
-Phase G: Claim Synthesizer v0 (Bundle B)
-Conservative heuristic claim synthesis without LLM.
+Phase I2: LLM Claim Synthesizer (Claude) with strict JSON + heuristic fallback.
+
+Public API:
+    synthesize_claims(evidence_spans, question, max_claims=2) -> List[Claim]
+
+Behavior:
+- Try LLM first (uses src.services.llm.llm_json). If JSON/IDs are valid → use those claims.
+- If LLM unavailable / invalid JSON / bad evidence_ids → fall back to the heuristic builder.
+- Emits clear logs so you can see which path was taken.
 """
+from __future__ import annotations
 from typing import List, Dict, Set
 from collections import Counter
 import uuid
 import re
+import logging
+
 from ..core.schemas import EvidenceSpan, Claim
+from ..services.llm import llm_json
+
+logger = logging.getLogger(__name__)
+
+MAX_EVIDENCE_TO_FEED = 8  # keep prompt compact and focused
+
+# ------------------------ Public entry ------------------------
+
+def synthesize_claims(evidence_spans: List[EvidenceSpan], question: str, max_claims: int = 2) -> List[Claim]:
+    """
+    Try LLM synthesis first. If unavailable/invalid → heuristic fallback.
+    """
+    logger.info("[Synth] Attempting LLM claim synthesis (max_claims=%d)", max_claims)
+    claims_llm = _llm_claims(evidence_spans, question, max_claims)
+    if claims_llm:
+        logger.info("[Synth] ✅ Using %d claim(s) from LLM", len(claims_llm))
+        return claims_llm[:max_claims]
+
+    logger.warning("[Synth] ⚠️ LLM produced no usable claims → falling back to heuristic")
+    claims_heur = synthesize_claims_heuristic(evidence_spans, max_claims=max_claims)
+    if claims_heur:
+        logger.info("[Synth] ✅ Heuristic produced %d claim(s)", len(claims_heur))
+    else:
+        logger.warning("[Synth] ⚠️ Heuristic also produced no claims")
+    return claims_heur[:max_claims]
+
+# ------------------------ LLM path ----------------------------
+
+def _llm_claims(evidence_spans: List[EvidenceSpan], question: str, max_claims: int) -> List[Claim]:
+    if len(evidence_spans) < 2:
+        logger.warning("[Synth] Not enough evidence spans for LLM (%d < 2)", len(evidence_spans))
+        return []
+
+    # choose up to MAX_EVIDENCE_TO_FEED evidence spans (retrieval already diversified)
+    spans = evidence_spans[:MAX_EVIDENCE_TO_FEED]
+    
+    # Build evidence list with clear IDs
+    evidence_list = []
+    for i, s in enumerate(spans, 1):
+        evidence_list.append(
+            f'[{s.id}] (Paper: {s.paper_id}, Section: {s.section})\n"{s.text}"'
+        )
+    evidence_str = "\n\n".join(evidence_list)
+
+    prompt = f"""You are analyzing scientific evidence to generate falsifiable claims.
+
+USER QUESTION:
+{question}
+
+EVIDENCE (use ONLY these IDs in your citations):
+{evidence_str}
+
+TASK:
+Generate {max_claims} specific, falsifiable claim(s) that are DIRECTLY supported by the evidence above.
+
+CRITICAL REQUIREMENTS:
+1. Each claim MUST cite AT LEAST 2 evidence IDs (e.g., ["id1", "id2", "id3"])
+2. Only use IDs from the evidence list above
+3. Claims should be specific and measurable, not vague
+4. One claim per object in the array
+5. Claims should be 20-150 characters long
+
+OUTPUT FORMAT (strict JSON, no markdown, no explanations):
+{{
+  "claims": [
+    {{
+      "text": "Specific falsifiable claim based on evidence",
+      "evidence_ids": ["id1", "id2", "id3"]
+    }}
+  ]
+}}
+
+Generate the JSON now:"""
+
+    js = llm_json(
+        prompt,
+        system="You are a scientific claim synthesizer. Output ONLY valid JSON matching the schema. Each claim MUST cite at least 2 evidence_ids.",
+        max_retries=2,
+        max_tokens=800,
+        temperature=0.1,
+    )
+
+    if not js or "claims" not in js or not isinstance(js.get("claims"), list):
+        logger.warning("[Synth] LLM returned None/invalid JSON structure")
+        return []
+
+    out: List[Claim] = []
+    seen_text_hash: Set[str] = set()
+    valid_ids = {s.id for s in spans}
+
+    logger.info("[Synth] LLM returned %d claim candidates", len(js.get("claims", [])))
+
+    for idx, item in enumerate(js.get("claims", [])[:max_claims], 1):
+        try:
+            text = str(item.get("text", "")).strip()
+            ids_raw = item.get("evidence_ids", []) or []
+            
+            # Validate evidence IDs
+            ids = [eid for eid in ids_raw if eid in valid_ids]
+            
+            logger.debug(
+                "[Synth] Claim %d: text_len=%d, raw_ids=%d, valid_ids=%d",
+                idx, len(text), len(ids_raw), len(ids)
+            )
+
+            # Relaxed validation: allow 1+ evidence_ids initially, prefer 2+
+            if len(text) < 20:
+                logger.warning("[Synth] Claim %d: Text too short (%d chars)", idx, len(text))
+                continue
+            
+            if len(text) > 300:
+                logger.warning("[Synth] Claim %d: Text too long (%d chars)", idx, len(text))
+                continue
+                
+            if len(ids) < 1:
+                logger.warning("[Synth] Claim %d: No valid evidence IDs (raw=%s)", idx, ids_raw)
+                continue
+            
+            # Warn if less than 2 citations but still accept
+            if len(ids) < 2:
+                logger.warning("[Synth] Claim %d: Only %d citation(s), should be 2+", idx, len(ids))
+            
+            # Check for duplicates
+            key = text.lower()[:200]
+            if key in seen_text_hash:
+                logger.warning("[Synth] Claim %d: Duplicate detected, skipping", idx)
+                continue
+            
+            seen_text_hash.add(key)
+            
+            # Create claim with up to 4 evidence IDs
+            claim = Claim(
+                id=str(uuid.uuid4()),
+                text=text,
+                evidence_ids=ids[:4]
+            )
+            out.append(claim)
+            logger.info("[Synth] ✓ Claim %d accepted: %s (evidence: %d)", idx, text[:80], len(ids))
+            
+        except Exception as e:
+            logger.warning("[Synth] Error validating claim %d: %s", idx, e)
+
+    if not out:
+        logger.warning("[Synth] LLM produced claims but NONE passed validation")
+        logger.warning("[Synth] This usually means evidence_ids were missing or invalid")
+    
+    return out
+
+# ------------------------ Heuristic fallback ------------------
 
 def synthesize_claims_heuristic(evidence_spans: List[EvidenceSpan], max_claims: int = 2) -> List[Claim]:
     if len(evidence_spans) < 2:

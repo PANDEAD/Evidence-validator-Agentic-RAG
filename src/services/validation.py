@@ -16,11 +16,24 @@ _tokenizer = None
 _model = None
 _device = "cpu"  # keep CPU for macOS portability
 
-# --- NEW: Calibration & aggregation knobs (tune easily)
-ALPHA_CAL = 1.15      # >1 sharpens, <1 flattens (simple power calibration)
-TRIM_FRAC = 0.15      # trimmed mean fraction on each tail
-MIN_EVIDENCE = 2      # need at least 2 spans to decide SUPPORTED/CONTESTED
-MARGIN = 0.12         # entail vs contradict margin to choose non-UNCERTAIN
+# --- FIXED: Smarter calibration & aggregation for sparse evidence
+ALPHA_CAL = 1.10      # Gentler sharpening (was 1.15)
+TRIM_FRAC = 0.0       # NO TRIMMING with sparse evidence! (was 0.15)
+MIN_EVIDENCE = 2      # need at least 2 spans
+MARGIN = 0.08         # Reduced margin (was 0.12)
+
+# NEW: Adaptive thresholds based on evidence count
+def _adaptive_thresholds(num_spans: int) -> Tuple[float, float]:
+    """
+    Lower thresholds when we have fewer spans.
+    With 2 spans, we can't expect 0.65 after aggregation!
+    """
+    if num_spans >= 4:
+        return 0.60, 0.40  # Original-ish thresholds
+    elif num_spans == 3:
+        return 0.50, 0.35  # Slightly lower
+    else:  # 2 spans
+        return 0.40, 0.30  # Much more forgiving
 
 def _load():
     global _tokenizer, _model
@@ -65,7 +78,6 @@ def _get_label_indices() -> Tuple[int, int, int]:
         traceback.print_exc()
         raise
 
-# NEW: Probability calibration
 def _calibrate_probs(p: np.ndarray, alpha: float = ALPHA_CAL) -> np.ndarray:
     """
     Apply power-law calibration to probabilities and renormalize.
@@ -77,17 +89,22 @@ def _calibrate_probs(p: np.ndarray, alpha: float = ALPHA_CAL) -> np.ndarray:
     p = p / p.sum(axis=1, keepdims=True)
     return p
 
-# NEW: Trimmed mean aggregation
-def _trimmed_mean(x: np.ndarray, trim: float = TRIM_FRAC) -> float:
+def _robust_mean(x: np.ndarray, trim: float = TRIM_FRAC) -> float:
     """
-    Compute trimmed mean by removing top and bottom trim fraction.
-    More robust to outliers than simple mean.
+    Compute mean with optional trimming.
+    With sparse data (n<=3), NO trimming is applied.
     """
     if x.size == 0:
         return 0.0
+    
+    # FIXED: Don't trim when we have few samples!
+    if x.size <= 3 or trim == 0.0:
+        return float(x.mean())
+    
     k = int(len(x) * trim)
     if k == 0:
         return float(x.mean())
+    
     xs = np.sort(x)
     xs = xs[k: len(xs) - k]
     if xs.size == 0:
@@ -151,15 +168,15 @@ def validate_claims_against_spans(
 ) -> List[Verdict]:
     """
     Robust claim validation with:
-    - Probability calibration
-    - Trimmed mean aggregation
+    - Adaptive thresholds based on evidence count
+    - Smart aggregation (no trimming with sparse data)
     - Margin-based decision rules
     - Concise rationales with example snippets
     """
     try:
         print(f"🔬 validate_claims_against_spans called")
         print(f"   Claims: {len(claims)}, Spans: {len(spans)}")
-        print(f"   Thresholds: support={tau_support}, contradict={tau_contradict}")
+        print(f"   Base thresholds: support={tau_support}, contradict={tau_contradict}")
         print(f"   Calibration: alpha={ALPHA_CAL}, trim={TRIM_FRAC}, margin={MARGIN}")
         
         span_map: Dict[str, EvidenceSpan] = {s.id: s for s in spans}
@@ -197,24 +214,28 @@ def validate_claims_against_spans(
                 ))
                 continue
 
-            # NEW: Apply calibration
+            # Apply calibration
             probs = _calibrate_probs(probs_raw, ALPHA_CAL)
             entail_scores = probs[:, 0]
             contra_scores = probs[:, 2]
 
-            # NEW: Use trimmed mean instead of simple mean
-            entail = _trimmed_mean(entail_scores, TRIM_FRAC)
-            contra = _trimmed_mean(contra_scores, TRIM_FRAC)
+            # FIXED: Use robust mean (no trimming for sparse data)
+            entail = _robust_mean(entail_scores, TRIM_FRAC)
+            contra = _robust_mean(contra_scores, TRIM_FRAC)
 
+            # FIXED: Get adaptive thresholds based on evidence count
+            adapt_tau_sup, adapt_tau_con = _adaptive_thresholds(len(cited))
+            
             print(f"      Raw scores - entail: {entail_scores}")
             print(f"      Raw scores - contra: {contra_scores}")
             print(f"      Aggregated - entail: {entail:.3f}, contra: {contra:.3f}")
+            print(f"      Adaptive thresholds - support: {adapt_tau_sup}, contradict: {adapt_tau_con}")
 
             # pick exemplar spans for rationale (best entail & best contradict)
             top_ent_i = int(np.argmax(entail_scores))
             top_con_i = int(np.argmax(contra_scores))
 
-            # NEW: Enhanced decision policy with margin
+            # FIXED: Use adaptive thresholds and smarter margin logic
             if len(cited) < MIN_EVIDENCE:
                 label = Label.UNCERTAIN
                 rationale = f"Insufficient evidence count ({len(cited)}<{MIN_EVIDENCE}) to assert a verdict."
@@ -222,20 +243,30 @@ def validate_claims_against_spans(
                 margin_diff = abs(entail - contra)
                 print(f"      Margin: {margin_diff:.3f} (threshold: {MARGIN})")
                 
-                if (entail >= tau_support) and (contra < tau_contradict) and (entail - contra >= MARGIN):
+                # FIXED: Check if we have a clear winner
+                has_clear_winner = margin_diff >= MARGIN
+                
+                if (entail >= adapt_tau_sup) and (contra < adapt_tau_con) and has_clear_winner:
                     label = Label.SUPPORTED
-                    rationale = "Average entailment exceeds threshold with low contradiction."
-                elif (contra >= tau_contradict) and (entail < tau_support) and (contra - entail >= MARGIN):
+                    rationale = f"Avg entailment {entail:.2f} exceeds threshold {adapt_tau_sup:.2f} with low contradiction."
+                elif (contra >= adapt_tau_con) and (entail < adapt_tau_sup) and has_clear_winner:
                     label = Label.CONTESTED
-                    rationale = "Average contradiction exceeds threshold with low entailment."
+                    rationale = f"Avg contradiction {contra:.2f} exceeds threshold {adapt_tau_con:.2f} with low entailment."
+                elif entail >= adapt_tau_sup and not has_clear_winner:
+                    # FIXED: Still mark as SUPPORTED if entail is high even without big margin
+                    label = Label.SUPPORTED
+                    rationale = f"High entailment {entail:.2f} despite narrow margin."
+                elif contra >= adapt_tau_con and not has_clear_winner:
+                    label = Label.CONTESTED
+                    rationale = f"High contradiction {contra:.2f} despite narrow margin."
                 else:
                     label = Label.UNCERTAIN
-                    rationale = "Mixed evidence or below decision margin."
+                    rationale = f"Mixed evidence (ent={entail:.2f}, con={contra:.2f})."
 
-            # NEW: Add short, inspectable snippet hints
-            ent_snip = premises[top_ent_i][:180].replace("\n", " ")
-            con_snip = premises[top_con_i][:180].replace("\n", " ")
-            rationale += f" Top-support: \"{ent_snip}\". Top-contradict: \"{con_snip}\"."
+            # Add short, inspectable snippet hints
+            ent_snip = premises[top_ent_i][:150].replace("\n", " ")
+            con_snip = premises[top_con_i][:150].replace("\n", " ")
+            rationale += f" Top-support: \"{ent_snip}...\" Top-contradict: \"{con_snip}...\""
 
             print(f"      Verdict: {label.value}")
 

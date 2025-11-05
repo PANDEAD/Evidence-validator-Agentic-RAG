@@ -1,15 +1,15 @@
 # src/agents/orchestrator.py
 """
 Phase H: Orchestrator Agent (Upgraded)
-Coordinates: Retrieval → Claim Synthesis → Validation → Counter-Retrieval → Final Answer
+Coordinates: Retrieval → Claim Synthesis → Validation → Final Answer
 """
 from typing import List, Dict, Any
 from datetime import datetime
 import traceback
 
 from src.core.schemas import Claim, Verdict, RunState, Label, EvidenceSpan
-from src.services.retrieval import hybrid_retrieve, counter_retrieve
-from src.agents.claim_synthesizer import synthesize_claims_heuristic
+from src.services.retrieval import hybrid_retrieve
+from src.agents.claim_synthesizer import synthesize_claims
 from src.services.validation import validate_claims_against_spans
 from src.services.answer import compose_final_answer
 
@@ -62,14 +62,14 @@ class PipelineOrchestrator:
                 return run_state
 
             # === STEP 2: CLAIM SYNTHESIS ===
-            print("\n Phase 2: CLAIM SYNTHESIS")
+            print("\n Phase 2: CLAIM SYNTHESIS (LLM+fallback)")
             run_state.logs.append({
                 "timestamp": datetime.now().isoformat(),
                 "step": "synthesis",
-                "message": "Synthesizing claims from evidence"
+                "message": "Synthesizing claims from evidence (LLM-first, heuristic fallback)"
             })
             
-            claims = synthesize_claims_heuristic(spans, max_claims=max_claims)
+            claims = synthesize_claims(spans, question, max_claims=max_claims)
             run_state.claims = claims
             
             print(f"   ✓ Generated {len(claims)} claims")
@@ -91,12 +91,12 @@ class PipelineOrchestrator:
                 self.run_history.append(run_state)
                 return run_state
 
-            # === STEP 3: VALIDATION (pass 1) ===
-            print("\n Phase 3: VALIDATION (Initial Pass)")
+            # === STEP 3: VALIDATION (single pass, no counter-retrieval) ===
+            print("\n Phase 3: VALIDATION")
             run_state.logs.append({
                 "timestamp": datetime.now().isoformat(),
                 "step": "validation",
-                "message": "Validating claims with enhanced aggregation (pass 1)"
+                "message": "Validating claims with enhanced NLI"
             })
             
             verdicts = validate_claims_against_spans(
@@ -107,85 +107,10 @@ class PipelineOrchestrator:
             )
             run_state.verdicts = verdicts
             
-            print(f"\n   ✓ Initial validation complete:")
+            print(f"\n   ✓ Validation complete:")
             for i, verdict in enumerate(verdicts, 1):
                 print(f"     Verdict {i}: {verdict.label.value} "
                       f"(support={verdict.support_score:.3f}, contra={verdict.contradiction_score:.3f})")
-
-            # === STEP 3b: COUNTER-RETRIEVAL (if needed) ===
-            need_counter = any(
-                (v.label == Label.CONTESTED) or (v.label == Label.UNCERTAIN)
-                for v in verdicts
-            )
-            
-            if need_counter and run_state.caps.max_counter_retrieval > 0:
-                print("\n🔄 Phase 3b: COUNTER-RETRIEVAL")
-                print(f"   Detected {sum(1 for v in verdicts if v.label == Label.UNCERTAIN)} UNCERTAIN "
-                      f"and {sum(1 for v in verdicts if v.label == Label.CONTESTED)} CONTESTED claims")
-                print("   Running contradiction-aware re-retrieval...")
-                
-                run_state.logs.append({
-                    "timestamp": datetime.now().isoformat(),
-                    "step": "counter-retrieval",
-                    "message": "Running contradiction-aware re-retrieval"
-                })
-                
-                try:
-                    extra_spans: List[EvidenceSpan] = []
-                    for cl in claims:
-                        print(f"   Searching counter-evidence for: {cl.text[:60]}...")
-                        counter_spans = counter_retrieve(cl.text, k=6)
-                        extra_spans.extend(counter_spans)
-                    
-                    # Merge by id (avoid duplicates)
-                    existing = {s.id for s in run_state.evidence_spans}
-                    merged = run_state.evidence_spans[:]
-                    new_count = 0
-                    for s in extra_spans:
-                        if s.id not in existing:
-                            merged.append(s)
-                            existing.add(s.id)
-                            new_count += 1
-                    
-                    run_state.evidence_spans = merged
-                    print(f"    Added {new_count} new counter-evidence spans")
-                    print(f"   Total evidence spans: {len(merged)}")
-                    
-                    run_state.logs.append({
-                        "timestamp": datetime.now().isoformat(),
-                        "step": "counter-retrieval",
-                        "message": f"Added {new_count} new spans (total: {len(merged)})"
-                    })
-
-                    # Re-validate with enhanced evidence
-                    print("\n Phase 3c: RE-VALIDATION (After Counter-Retrieval)")
-                    run_state.logs.append({
-                        "timestamp": datetime.now().isoformat(),
-                        "step": "validation",
-                        "message": "Re-validating claims with counter-evidence (pass 2)"
-                    })
-                    
-                    verdicts2 = validate_claims_against_spans(
-                        claims,
-                        run_state.evidence_spans,
-                        tau_support=run_state.thresholds["tau_support"],
-                        tau_contradict=run_state.thresholds["tau_contradict"],
-                    )
-                    run_state.verdicts = verdicts2
-                    
-                    print(f"\n  Re-validation complete:")
-                    for i, verdict in enumerate(verdicts2, 1):
-                        print(f"     Verdict {i}: {verdict.label.value} "
-                              f"(support={verdict.support_score:.3f}, contra={verdict.contradiction_score:.3f})")
-                    
-                except Exception as counter_error:
-                    print(f"  Counter-retrieval failed: {counter_error}")
-                    print("   Continuing with initial verdicts...")
-                    run_state.logs.append({
-                        "timestamp": datetime.now().isoformat(),
-                        "step": "counter-retrieval",
-                        "message": f"Counter-retrieval failed: {str(counter_error)}"
-                    })
 
             # === STEP 4: FINAL ANSWER ===
             print("\nPhase 4: COMPOSING FINAL ANSWER")
@@ -232,7 +157,6 @@ class PipelineOrchestrator:
         return run_state
 
     def get_run_history(self) -> List[Dict[str, Any]]:
-        """Get summary of all pipeline runs."""
         history = []
         for rs in self.run_history:
             history.append({
@@ -257,5 +181,4 @@ orchestrator = PipelineOrchestrator()
 
 
 def run_full_pipeline(question: str, max_claims: int = 2, retrieval_k: int = 12) -> RunState:
-    """Convenience function to run the full enhanced pipeline."""
     return orchestrator.run_pipeline(question, max_claims, retrieval_k)
