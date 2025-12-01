@@ -27,12 +27,7 @@ def _adjust_verdicts_for_opposition(
     claims: List[Claim], 
     verdicts: List[Verdict]
 ) -> List[Verdict]:
-    """
-    Logic:
-    - If claim OPPOSES question AND verdict is SUPPORTED → User's question is REFUTED
-    - If claim OPPOSES question AND verdict is CONTESTED → User's question is SUPPORTED
-    - If claim ALIGNS with question → Keep original verdict
-    """
+   
     adjusted = []
     
     for claim, verdict in zip(claims, verdicts):
@@ -269,7 +264,7 @@ Generate JSON now:"""
     out += "**Detailed Findings:**\n"
     for i, item in enumerate(packed, 1):
         out += f"{i}. **{item['verdict']}** {item['opposition_note']}\n"
-        out += f"   📊 Evidence: support={item['support']}, contra={item['contradiction']}\n"
+        out += f"    Evidence: support={item['support']}, contra={item['contradiction']}\n"
         out += f"   ↳ {item['claim']}\n\n"
     
     return out
@@ -330,7 +325,7 @@ def _compose_template_answer(question: str, claims: List[Claim], verdicts: List[
         }.get(v.label, "•")
         
         out += f"{i}. {emoji} **{v.label.value}**{opposition_marker}\n"
-        out += f"   📊 Evidence: support={v.support_score:.2f}, contra={v.contradiction_score:.2f}\n"
+        out += f"   Evidence: support={v.support_score:.2f}, contra={v.contradiction_score:.2f}\n"
         out += f"   ↳ {cl.text}\n\n"
     
    

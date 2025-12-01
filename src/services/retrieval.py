@@ -86,7 +86,6 @@ def vector_search(query: str, index: faiss.Index, model: SentenceTransformer, sp
 
 def _mmr_select(ids: List[str], spans_map: Dict[str, Dict[str, Any]], model: SentenceTransformer, top_k: int, lambda_div: float = 0.7) -> List[str]:
     
-    #Lightweight MMR-like selection to increase diversity.
     if not ids:
         return []
     
