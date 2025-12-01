@@ -56,5 +56,7 @@ python app.py
 #run the frontend in a new terminal
 streamlit run ui/app.py
 ```
+<img width="1408" height="775" alt="Screenshot 2025-11-09 at 8 27 46 AM" src="https://github.com/user-attachments/assets/4f811b8e-cfcd-46c8-ac18-cdbc044998c1" />
+<img width="1408" height="784" alt="Screenshot 2025-11-09 at 8 29 53 AM" src="https://github.com/user-attachments/assets/ccc8c65d-16ed-4234-80dd-6beafa1b43d0" />
 
 
