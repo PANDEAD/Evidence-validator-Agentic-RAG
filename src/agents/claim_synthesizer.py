@@ -1,15 +1,5 @@
 # src/agents/claim_synthesizer.py
-"""
-Phase I2: LLM Claim Synthesizer (Claude) with strict JSON + heuristic fallback.
 
-Public API:
-    synthesize_claims(evidence_spans, question, max_claims=2) -> List[Claim]
-
-Behavior:
-- Try LLM first (uses src.services.llm.llm_json). If JSON/IDs are valid → use those claims.
-- If LLM unavailable / invalid JSON / bad evidence_ids → fall back to the heuristic builder.
-- Emits clear logs so you can see which path was taken.
-"""
 from __future__ import annotations
 from typing import List, Dict, Set
 from collections import Counter
@@ -22,206 +12,389 @@ from ..services.llm import llm_json
 
 logger = logging.getLogger(__name__)
 
-MAX_EVIDENCE_TO_FEED = 8  # keep prompt compact and focused
-
-# ------------------------ Public entry ------------------------
+MAX_EVIDENCE_TO_FEED = 10
+MIN_EVIDENCE_FOR_LLM = 3
 
 def synthesize_claims(evidence_spans: List[EvidenceSpan], question: str, max_claims: int = 2) -> List[Claim]:
-    """
-    Try LLM synthesis first. If unavailable/invalid → heuristic fallback.
-    """
-    logger.info("[Synth] Attempting LLM claim synthesis (max_claims=%d)", max_claims)
-    claims_llm = _llm_claims(evidence_spans, question, max_claims)
+    
+    logger.info("[Synth] Starting claim synthesis (max_claims=%d)", max_claims)
+    
+ 
+    is_short_technical = len(question.split()) <= 12
+   
+    claims_llm = _llm_claims(evidence_spans, question, max_claims, is_short_technical)
     if claims_llm:
-        logger.info("[Synth] ✅ Using %d claim(s) from LLM", len(claims_llm))
+        logger.info("[Synth]  LLM produced %d claims", len(claims_llm))
         return claims_llm[:max_claims]
 
-    logger.warning("[Synth] ⚠️ LLM produced no usable claims → falling back to heuristic")
+    logger.warning("[Synth]  LLM failed → smart heuristic fallback")
+    
+    claims_smart = _smart_heuristic_claims(evidence_spans, question, max_claims)
+    if claims_smart:
+        logger.info("[Synth]  Smart heuristic produced %d claims", len(claims_smart))
+        return claims_smart[:max_claims]
     claims_heur = synthesize_claims_heuristic(evidence_spans, max_claims=max_claims)
-    if claims_heur:
-        logger.info("[Synth] ✅ Heuristic produced %d claim(s)", len(claims_heur))
-    else:
-        logger.warning("[Synth] ⚠️ Heuristic also produced no claims")
     return claims_heur[:max_claims]
 
-# ------------------------ LLM path ----------------------------
 
-def _llm_claims(evidence_spans: List[EvidenceSpan], question: str, max_claims: int) -> List[Claim]:
-    if len(evidence_spans) < 2:
-        logger.warning("[Synth] Not enough evidence spans for LLM (%d < 2)", len(evidence_spans))
+def _llm_claims(
+    evidence_spans: List[EvidenceSpan], 
+    question: str, 
+    max_claims: int,
+    is_short_technical: bool = False
+) -> List[Claim]:
+
+    if len(evidence_spans) < MIN_EVIDENCE_FOR_LLM:
+        logger.warning("[Synth] Not enough evidence (%d < %d)", len(evidence_spans), MIN_EVIDENCE_FOR_LLM)
+        return []
+    quality_spans = [
+        s for s in evidence_spans[:MAX_EVIDENCE_TO_FEED]
+        if len(s.text.strip()) >= 100
+    ]
+    
+    if len(quality_spans) < MIN_EVIDENCE_FOR_LLM:
+        logger.warning("[Synth] Not enough quality spans after filtering")
         return []
 
-    # choose up to MAX_EVIDENCE_TO_FEED evidence spans (retrieval already diversified)
-    spans = evidence_spans[:MAX_EVIDENCE_TO_FEED]
-    
-    # Build evidence list with clear IDs
     evidence_list = []
-    for i, s in enumerate(spans, 1):
+    for i, s in enumerate(quality_spans, 1):
         evidence_list.append(
-            f'[{s.id}] (Paper: {s.paper_id}, Section: {s.section})\n"{s.text}"'
+            f'[{s.id}] (Paper: {s.paper_id}, Section: {s.section})\n"{s.text[:500]}..."'
         )
     evidence_str = "\n\n".join(evidence_list)
-
-    prompt = f"""You are analyzing scientific evidence to generate falsifiable claims.
+    if is_short_technical:
+        prompt = f"""You are a scientific claim synthesizer analyzing evidence to answer a TECHNICAL research question.
 
 USER QUESTION:
-{question}
+"{question}"
 
-EVIDENCE (use ONLY these IDs in your citations):
+EVIDENCE SPANS (use ONLY these IDs in citations):
 {evidence_str}
 
 TASK:
-Generate {max_claims} specific, falsifiable claim(s) that are DIRECTLY supported by the evidence above.
+Generate {max_claims} specific claims that DIRECTLY answer the technical question.
 
-CRITICAL REQUIREMENTS:
-1. Each claim MUST cite AT LEAST 2 evidence IDs (e.g., ["id1", "id2", "id3"])
-2. Only use IDs from the evidence list above
-3. Claims should be specific and measurable, not vague
-4. One claim per object in the array
-5. Claims should be 20-150 characters long
+REQUIREMENTS:
+1. **Relevance**: Claims MUST directly address the technical concept in the question
+2. **Precision**: State what the evidence shows about the concept (existence, absence, properties, limitations)
+3. **Citations**: Each claim MUST cite AT LEAST 2 evidence IDs
+4. **Accuracy**: Only state what the evidence explicitly supports or contradicts
+5. **Technical clarity**: Use precise technical language from the domain
 
-OUTPUT FORMAT (strict JSON, no markdown, no explanations):
+GOOD EXAMPLES (for technical questions):
+✓ "Self-reflection methods lack formal convergence proofs in current literature, relying primarily on empirical validation"
+✓ "Existing research demonstrates practical effectiveness of self-reflection without establishing theoretical convergence guarantees"
+✓ "Current RAG architectures require external vector stores, increasing memory update complexity compared to parameter-based approaches"
+✓ "Fine-tuning enables direct parameter updates, while RAG systems necessitate separate index maintenance and retrieval overhead"
+
+BAD EXAMPLES:
+❌ "Evidence from papers indicates quantifiable relationships involving fake, passport" (irrelevant to question)
+❌ "Research suggests various patterns" (too vague)
+❌ "Studies show considerations" (doesn't answer question)
+
+OUTPUT FORMAT (strict JSON, no markdown):
 {{
   "claims": [
     {{
-      "text": "Specific falsifiable claim based on evidence",
-      "evidence_ids": ["id1", "id2", "id3"]
+      "text": "Precise technical claim that directly answers the question",
+      "evidence_ids": ["id1", "id2", "id3"],
+      "confidence": "high|medium|low"
     }}
   ]
 }}
 
-Generate the JSON now:"""
+Generate JSON now:"""
+    else:
+        prompt = f"""You are a scientific claim synthesizer analyzing evidence to answer a research question.
+
+USER QUESTION:
+"{question}"
+
+EVIDENCE SPANS (use ONLY these IDs in citations):
+{evidence_str}
+
+TASK:
+Generate {max_claims} specific, falsifiable claims that DIRECTLY answer the user's question.
+
+CRITICAL REQUIREMENTS:
+1. **Relevance**: Claims MUST directly address the question - no tangential information
+2. **Specificity**: Include numbers, percentages, or concrete facts when available
+3. **Citations**: Each claim MUST cite AT LEAST 2 evidence IDs (preferably 3-4)
+4. **Falsifiability**: Claims must be testable/verifiable, not vague statements
+5. **Accuracy**: Only state what the evidence explicitly supports
+
+GOOD EXAMPLES (for quantitative questions):
+✓ "The top 1% income share in France was approximately 20% in 1900, declining to 7-8% by the 1990s"
+✓ "Historical data shows France's top percentile captured one-fifth of total income at the century's start"
+
+OUTPUT FORMAT (strict JSON, no markdown):
+{{
+  "claims": [
+    {{
+      "text": "Specific, factual claim with details that directly answers the question",
+      "evidence_ids": ["id1", "id2", "id3"],
+      "confidence": "high|medium|low"
+    }}
+  ]
+}}
+
+Generate JSON now:"""
 
     js = llm_json(
         prompt,
-        system="You are a scientific claim synthesizer. Output ONLY valid JSON matching the schema. Each claim MUST cite at least 2 evidence_ids.",
+        system="You are a precise scientific claim synthesizer. Output ONLY valid JSON. Be specific and accurate.",
         max_retries=2,
-        max_tokens=800,
-        temperature=0.1,
+        max_tokens=1200,  
+        temperature=0.0,
     )
 
-    if not js or "claims" not in js or not isinstance(js.get("claims"), list):
-        logger.warning("[Synth] LLM returned None/invalid JSON structure")
+    if not js or "claims" not in js:
+        logger.warning("[Synth] LLM returned invalid JSON")
         return []
 
     out: List[Claim] = []
-    seen_text_hash: Set[str] = set()
-    valid_ids = {s.id for s in spans}
-
-    logger.info("[Synth] LLM returned %d claim candidates", len(js.get("claims", [])))
+    seen_text: Set[str] = set()
+    valid_ids = {s.id for s in quality_spans}
 
     for idx, item in enumerate(js.get("claims", [])[:max_claims], 1):
         try:
             text = str(item.get("text", "")).strip()
             ids_raw = item.get("evidence_ids", []) or []
-            
-            # Validate evidence IDs
+            confidence = str(item.get("confidence", "medium")).lower()
             ids = [eid for eid in ids_raw if eid in valid_ids]
+            min_length = 25 if is_short_technical else 30
+            max_length = 450
+            min_citations = 2
             
-            logger.debug(
-                "[Synth] Claim %d: text_len=%d, raw_ids=%d, valid_ids=%d",
-                idx, len(text), len(ids_raw), len(ids)
-            )
-
-            # Relaxed validation: allow 1+ evidence_ids initially, prefer 2+
-            if len(text) < 20:
-                logger.warning("[Synth] Claim %d: Text too short (%d chars)", idx, len(text))
+            if len(text) < min_length:
+                logger.warning("[Synth] Claim %d: Too short (%d chars)", idx, len(text))
                 continue
             
-            if len(text) > 300:
-                logger.warning("[Synth] Claim %d: Text too long (%d chars)", idx, len(text))
+            if len(text) > max_length:
+                logger.warning("[Synth] Claim %d: Too long (%d chars)", idx, len(text))
                 continue
+            
+            if len(ids) < min_citations:
+                logger.warning("[Synth] Claim %d: Insufficient citations (%d < %d)", idx, len(ids), min_citations)
+                continue
+            irrelevant_phrases = [
+                "evidence from.*papers indicates quantifiable relationships involving",
+                "analysis of.*sources shows measurable patterns related to",
+                "research suggests patterns",
+                "studies demonstrate relationships",
+                "fake.*passport",  
+                "2025.*2024",  
+            ]
+            is_irrelevant = any(re.search(phrase, text.lower()) for phrase in irrelevant_phrases)
+            if is_irrelevant:
+                logger.warning("[Synth] Claim %d: Irrelevant/generic content detected", idx)
+                continue
+            
+            if is_short_technical:
                 
-            if len(ids) < 1:
-                logger.warning("[Synth] Claim %d: No valid evidence IDs (raw=%s)", idx, ids_raw)
+                technical_indicators = [
+                    r'\b(lack|without|absence|no|not|limited|insufficient)\b', 
+                    r'\b(has|have|includes|contains|provides|enables)\b',  
+                    r'\b(method|approach|technique|algorithm|system|framework)\b',  
+                    r'\b(formal|theoretical|empirical|practical)\b',  
+                    r'\b(proof|guarantee|property|characteristic|feature)\b',  
+                ]
+                has_technical_content = any(re.search(pattern, text, re.IGNORECASE) for pattern in technical_indicators)
+                
+                if not has_technical_content:
+                    logger.warning("[Synth] Claim %d: Lacks technical content", idx)
+                    continue
+                    
+            else:
+    
+                vague_patterns = [
+                    r'\b(suggests?|may|might|could|possibly|potentially)\b',
+                    r'\b(patterns?|considerations?|aspects?)\b',
+                    r'\b(further research|additional study)\b'
+                ]
+                vague_count = sum(1 for p in vague_patterns if re.search(p, text, re.IGNORECASE))
+                if vague_count >= 2:
+                    logger.warning("[Synth] Claim %d: Too vague (matched %d vague patterns)", idx, vague_count)
+                    continue
+                
+                has_number = bool(re.search(r'\d+', text))
+                has_specific_term = bool(re.search(
+                    r'\b(percent|ratio|rate|share|declined?|increased?|from|to|approximately|around)\b', 
+                    text, 
+                    re.IGNORECASE
+                ))
+                
+                if not (has_number or has_specific_term):
+                    logger.warning("[Synth] Claim %d: Lacks quantitative specificity", idx)
+                    continue
+            key = text.lower()[:100]
+            if key in seen_text:
+                logger.warning("[Synth] Claim %d: Duplicate detected", idx)
                 continue
+            seen_text.add(key)
             
-            # Warn if less than 2 citations but still accept
-            if len(ids) < 2:
-                logger.warning("[Synth] Claim %d: Only %d citation(s), should be 2+", idx, len(ids))
-            
-            # Check for duplicates
-            key = text.lower()[:200]
-            if key in seen_text_hash:
-                logger.warning("[Synth] Claim %d: Duplicate detected, skipping", idx)
-                continue
-            
-            seen_text_hash.add(key)
-            
-            # Create claim with up to 4 evidence IDs
             claim = Claim(
                 id=str(uuid.uuid4()),
                 text=text,
                 evidence_ids=ids[:4]
             )
             out.append(claim)
-            logger.info("[Synth] ✓ Claim %d accepted: %s (evidence: %d)", idx, text[:80], len(ids))
+            logger.info("[Synth] ✓ Claim %d accepted: %s (citations: %d)", 
+                       idx, text[:80], len(ids))
             
         except Exception as e:
             logger.warning("[Synth] Error validating claim %d: %s", idx, e)
 
     if not out:
-        logger.warning("[Synth] LLM produced claims but NONE passed validation")
-        logger.warning("[Synth] This usually means evidence_ids were missing or invalid")
+        logger.warning("[Synth] No claims passed validation")
     
     return out
 
-# ------------------------ Heuristic fallback ------------------
+
+def _smart_heuristic_claims(
+    evidence_spans: List[EvidenceSpan], 
+    question: str, 
+    max_claims: int
+) -> List[Claim]:
+    if len(evidence_spans) < 2:
+        return []
+    
+    
+    keywords = _extract_keywords(question)
+    logger.info(f"[SmartHeur] Keywords: {list(keywords)[:5]}")
+    
+    if not keywords:
+        return []
+    scored_spans = []
+    for span in evidence_spans[:12]:
+        score = sum(1 for kw in keywords if kw in span.text.lower())
+        if score > 0:
+            scored_spans.append((span, score))
+    
+    scored_spans.sort(key=lambda x: x[1], reverse=True)
+    
+    if not scored_spans:
+        logger.warning("[SmartHeur] No relevant spans found")
+        return []
+    
+    
+    top_spans = [s[0] for s in scored_spans[:6]]
+    
+    
+    claims: List[Claim] = []
+    
+    if len(top_spans) >= 3:
+        relevant_sentences = []
+        for span in top_spans[:3]:
+            sentences = re.split(r'[.!?]+', span.text)
+            for sent in sentences:
+                if any(kw in sent.lower() for kw in keywords) and len(sent.strip()) > 40:
+                    relevant_sentences.append(sent.strip())
+        
+        if relevant_sentences:
+            claim_text = relevant_sentences[0][:350]
+            if len(claim_text) >= 50:
+                claims.append(Claim(
+                    id=str(uuid.uuid4()),
+                    text=claim_text,
+                    evidence_ids=[s.id for s in top_spans[:3]]
+                ))
+    
+    return claims[:max_claims]
+
+
+def _extract_keywords(question: str) -> Set[str]:
+    """Extract meaningful keywords from question."""
+    stop_words = {
+        'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 
+        'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 
+        'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should'
+    }
+    
+    words = re.findall(r'\b[a-zA-Z]{3,}\b', question.lower())
+    keywords = {w for w in words if w not in stop_words}
+    words_list = question.lower().split()
+    bigrams = {f"{words_list[i]} {words_list[i+1]}" 
+               for i in range(len(words_list)-1)}
+    
+    return keywords.union(bigrams)
+
 
 def synthesize_claims_heuristic(evidence_spans: List[EvidenceSpan], max_claims: int = 2) -> List[Claim]:
+    
     if len(evidence_spans) < 2:
         return []
 
-    quality_spans = [span for span in evidence_spans if len(span.text.strip()) >= 50]
+    quality_spans = [s for s in evidence_spans if len(s.text.strip()) >= 80]
     if len(quality_spans) < 2:
         return []
 
     claims: List[Claim] = []
+    
 
-    if len(quality_spans) >= 4:
+    by_paper: Dict[str, List[EvidenceSpan]] = {}
+    for span in quality_spans[:8]:
+        by_paper.setdefault(span.paper_id, []).append(span)
+    
+    paper_groups = list(by_paper.values())
+    if len(paper_groups) >= 2:
+        for i, group in enumerate(paper_groups[:max_claims], 1):
+            if len(group) >= 2:
+                claim = _create_claim_from_group(group, i)
+                if claim:
+                    claims.append(claim)
+    else:
         mid = len(quality_spans) // 2
         g1 = quality_spans[:mid]
         g2 = quality_spans[mid:]
-        c1 = _create_claim_from_group(g1, 1)
-        if c1: claims.append(c1)
-        c2 = _create_claim_from_group(g2, 2)
-        if c2: claims.append(c2)
-    else:
-        c = _create_claim_from_group(quality_spans, 1)
-        if c: claims.append(c)
+        if len(g1) >= 2:
+            claims.append(_create_claim_from_group(g1, 1))
+        if len(g2) >= 2:
+            claims.append(_create_claim_from_group(g2, 2))
 
     return claims[:max_claims]
 
+
 def _create_claim_from_group(evidence_group: List[EvidenceSpan], claim_num: int) -> Claim | None:
+    """Create claim from evidence group."""
     if len(evidence_group) < 2:
         return None
+    
     themes = _extract_themes(evidence_group)
-    papers = _get_paper_diversity(evidence_group)
-    text = _generate_claim_text(themes, papers, claim_num)
-    evidence_ids = [span.id for span in evidence_group[:4]]
+    papers = {s.paper_id for s in evidence_group}
+    
+    numbers = []
+    for s in evidence_group:
+        numbers.extend(re.findall(r'\d+(?:\.\d+)?%?', s.text))
+    
+    topic = ", ".join(list(themes.keys())[:2]) if themes else "the available data"
+    
+    if numbers:
+        num_str = numbers[0]
+        templates = [
+            f"Evidence from {len(papers)} papers indicates quantifiable relationships involving {topic}, with values around {num_str}.",
+            f"Analysis of {len(papers)} sources shows measurable patterns related to {topic}, including figures near {num_str}.",
+        ]
+    else:
+        templates = [
+            f"Evidence from {len(papers)} independent sources converges on findings related to {topic}.",
+            f"Cross-study analysis ({len(papers)} papers) reveals consistent patterns involving {topic}.",
+        ]
+    
+    text = templates[claim_num % len(templates)]
+    evidence_ids = [s.id for s in evidence_group[:4]]
+    
     return Claim(id=str(uuid.uuid4()), text=text, evidence_ids=evidence_ids)
 
+
 def _extract_themes(evidence_spans: List[EvidenceSpan]) -> Dict[str, int]:
+    """Extract key themes from evidence."""
     combined = " ".join([s.text for s in evidence_spans])
-    stop = {
-        'the','a','an','and','or','but','in','on','at','to','for','of','with','by','is','are','was','were',
-        'be','been','have','has','had','do','does','did','will','would','could','should',
-        'this','that','these','those','i','you','he','she','it','we','they'
+    stop_words = {
+        'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by',
+        'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did',
+        'will', 'would', 'could', 'should', 'this', 'that', 'these', 'those'
     }
-    words = re.findall(r'\b[a-zA-Z]{3,}\b', combined.lower())
-    filtered = [w for w in words if w not in stop]
+    words = re.findall(r'\b[a-zA-Z]{4,}\b', combined.lower())
+    filtered = [w for w in words if w not in stop_words]
     return dict(Counter(filtered).most_common(5))
-
-def _get_paper_diversity(evidence_spans: List[EvidenceSpan]) -> Set[str]:
-    return {s.paper_id for s in evidence_spans}
-
-def _generate_claim_text(themes: Dict[str, int], papers: Set[str], claim_num: int) -> str:
-    paper_count = len(papers)
-    top = list(themes.keys())[:2]
-    topic = ", ".join(top) if top else "the available data"
-    templates = [
-        f"Based on evidence from {paper_count} sources, research suggests patterns related to {topic} that warrant further investigation.",
-        f"Analysis of {paper_count} papers indicates potential relationships involving {topic}, though additional research may be needed for confirmation.",
-        f"Evidence from multiple sources ({paper_count} papers) points to considerations around {topic} that merit scientific attention."
-    ]
-    return templates[(claim_num - 1) % len(templates)]

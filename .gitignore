@@ -4,7 +4,6 @@ __pycache__/
 .venv/
 .env
 
-
 .DS_Store
 
 # Data folders (ignore contents)

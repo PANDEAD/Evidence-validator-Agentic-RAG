@@ -6,7 +6,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 
-# Set environment variables BEFORE any torch imports
 os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
 os.environ['OMP_NUM_THREADS'] = '1'
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
@@ -18,7 +17,6 @@ from src.services.validation import validate_claims_against_spans
 
 app = FastAPI(title="Multi-Agent RAG Backend")
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -32,7 +30,7 @@ class RunRequest(BaseModel):
     max_claims: int = 2
     retrieval_k: int = 12
 
-# Global flag to prevent multiple model loads
+
 _models_loaded = False
 
 class RetrieveRequest(BaseModel):
@@ -43,7 +41,6 @@ class RetrieveRequest(BaseModel):
 def retrieve(req: RetrieveRequest):
     try:
         spans = hybrid_retrieve(req.question, top_k_final=req.top_k)
-        # Return plain dicts for the UI
         return [s.model_dump() for s in spans]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -53,10 +50,10 @@ def startup_event():
     global _models_loaded
     
     if _models_loaded:
-        print("⚠️  Models already loaded, skipping...")
+        print(" Models already loaded, skipping...")
         return
     
-    print("🚀 Preloading model and index…")
+    print(" Preloading model and index…")
     try:
         print("   Loading retrieval model...")
         _ = get_model()
@@ -67,11 +64,10 @@ def startup_event():
         print("   ✓ Index loaded")
         
         _models_loaded = True
-        print("✅ Preload complete")
+        print(" Preload complete")
     except Exception as e:
-        print(f"❌ Preload failed: {e}")
+        print(f" Preload failed: {e}")
         traceback.print_exc()
-        # Don't raise - allow app to start, models will load on first request
 
 @app.get("/health")
 def health():
@@ -87,24 +83,24 @@ def health():
 @app.post("/run")
 def run_pipeline(req: RunRequest):
     print(f"\n{'='*60}")
-    print(f"📥 Received request: {req.question}")
+    print(f" Received request: {req.question}")
     print(f"   max_claims={req.max_claims}, retrieval_k={req.retrieval_k}")
     print(f"{'='*60}\n")
     
     try:
-        print("🔍 Step 1: Starting pipeline...")
+        print(" Step 1: Starting pipeline...")
         result = run_full_pipeline(
             question=req.question,
             max_claims=req.max_claims,
             retrieval_k=req.retrieval_k
         )
-        print("✅ Step 1: Pipeline completed successfully")
+        print(" Step 1: Pipeline completed successfully")
         
-        print("📦 Step 2: Converting result to dict...")
+        print(" Step 2: Converting result to dict...")
         result_dict = result.dict()
-        print("✅ Step 2: Conversion complete")
+        print("Step 2: Conversion complete")
         
-        print(f"📊 Result summary:")
+        print(f"Result summary:")
         print(f"   Status: {result_dict.get('status')}")
         print(f"   Evidence spans: {len(result_dict.get('evidence_spans', []))}")
         print(f"   Claims: {len(result_dict.get('claims', []))}")
@@ -118,13 +114,12 @@ def run_pipeline(req: RunRequest):
         error_trace = traceback.format_exc()
         
         print(f"\n{'='*60}")
-        print(f"❌ ERROR: {error_type}")
-        print(f"❌ Message: {error_msg}")
+        print(f" ERROR: {error_type}")
+        print(f" Message: {error_msg}")
         print(f"{'='*60}")
         print(f"Stack trace:\n{error_trace}")
         print(f"{'='*60}\n")
         
-        # Return error details to frontend
         raise HTTPException(
             status_code=500,
             detail={
@@ -136,5 +131,4 @@ def run_pipeline(req: RunRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    # Force single worker on macOS
     uvicorn.run(app, host="0.0.0.0", port=8000, workers=1)

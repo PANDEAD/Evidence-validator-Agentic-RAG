@@ -11,19 +11,19 @@ from sentence_transformers import SentenceTransformer
 
 from src.core.schemas import EvidenceSpan
 
-# ---- Paths
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INDEX_DIR = REPO_ROOT / "data" / "indices"
 FAISS_PATH = INDEX_DIR / "faiss.index"
 SQLITE_PATH = INDEX_DIR / "meta.sqlite"
 
-# ---- Embedding model
-EMB_MODEL_NAME = "BAAI/bge-base-en-v1.5"   # base: CPU-friendly
+
+EMB_MODEL_NAME = "BAAI/bge-base-en-v1.5"   
 TOP_K_FUSION = 50
 TOP_K_FINAL = 12
-SIM_THRESHOLD = 0.97  # NEW: tighter near-duplicate cutoff for safety
+SIM_THRESHOLD = 0.97  
 
-# Cache model and data
+
 _cached_model = None
 _cached_index = None
 _cached_spans = None
@@ -83,11 +83,10 @@ def vector_search(query: str, index: faiss.Index, model: SentenceTransformer, sp
     return top_ids
 
 
-# NEW: MMR-style diversity selection
+
 def _mmr_select(ids: List[str], spans_map: Dict[str, Dict[str, Any]], model: SentenceTransformer, top_k: int, lambda_div: float = 0.7) -> List[str]:
-    """
-    Lightweight MMR-like selection to increase diversity.
-    """
+    
+    #Lightweight MMR-like selection to increase diversity.
     if not ids:
         return []
     
@@ -95,16 +94,15 @@ def _mmr_select(ids: List[str], spans_map: Dict[str, Dict[str, Any]], model: Sen
         texts = [spans_map[sid]["text"] for sid in ids]
         embs = model.encode(texts, normalize_embeddings=True, show_progress_bar=False).astype(np.float32)
 
-        selected: List[int] = [0]   # start with the first candidate
+        selected: List[int] = [0]   
         cand = list(range(1, len(ids)))
 
         while len(selected) < min(top_k, len(ids)) and cand:
-            # diversity term: farthest from already selected
+           
             best_i, best_score = None, -1e9
             for i in cand:
-                # diversity: min cosine similarity to any selected (prefer smaller sim)
                 sim_to_sel = max(float(np.dot(embs[i], embs[j])) for j in selected)
-                # blended score (favor lower sim)
+                
                 score = (1.0 - lambda_div) * (1.0 - len(selected)/len(ids)) + lambda_div * (1 - sim_to_sel)
                 if score > best_score:
                     best_score = score
@@ -114,7 +112,7 @@ def _mmr_select(ids: List[str], spans_map: Dict[str, Dict[str, Any]], model: Sen
 
         return [ids[i] for i in selected]
     except Exception as e:
-        print(f"⚠️  MMR selection failed: {e}, falling back to simple selection")
+        print(f" MMR selection failed: {e}, falling back to simple selection")
         return ids[:top_k]
 
 
@@ -142,14 +140,14 @@ def hybrid_retrieve(query: str, top_k_fusion: int = TOP_K_FUSION, top_k_final: i
         seen_texts.add(key)
         pruned.append(sid)
 
-    # NEW: Apply MMR diversity selection
+   
     diverse_ids = _mmr_select(pruned, spans_map, model, top_k=top_k_final, lambda_div=0.7)
 
     results: List[EvidenceSpan] = [EvidenceSpan(**spans_map[sid]) for sid in diverse_ids]
     return results
 
 
-# NEW: Counter-retrieval for contested claims
+
 _NEGATION_TRIGGERS = [" no ", " not ", " no effect ", " decreases ", " reduction ", " inhibit ", " suppress "]
 _ANTONYM = {"increase": "decrease", "decrease": "increase", "improve": "worsen", "worsen": "improve"}
 
@@ -159,21 +157,19 @@ def build_counter_query(claim_text: str) -> str:
     for k, v in _ANTONYM.items():
         if k in q:
             q = q.replace(k, v)
-    # gently add negation token
+   
     if " no " not in q and " not " not in q:
         q = "not " + q
     return q
 
 def counter_retrieve(claim_text: str, k: int = TOP_K_FINAL) -> List[EvidenceSpan]:
-    """
-    Retrieve evidence that might contradict the claim.
-    """
+    
     try:
         alt = build_counter_query(claim_text)
-        print(f"   🔄 Counter-query: {alt[:80]}...")
+        print(f" Counter-query: {alt[:80]}...")
         return hybrid_retrieve(alt, top_k_fusion=TOP_K_FUSION, top_k_final=k)
     except Exception as e:
-        print(f"   ⚠️ Counter-retrieval failed: {e}")
+        print(f" Counter-retrieval failed: {e}")
         return []
 
 

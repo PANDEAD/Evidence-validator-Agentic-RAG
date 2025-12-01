@@ -5,7 +5,6 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 from pydantic import BaseModel, Field, ConfigDict
 
-# ---- Thresholds
 TAU_SUPPORT: float = 0.65
 TAU_CONTRADICT: float = 0.40
 
@@ -52,7 +51,7 @@ class RunCaps(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     max_revision: int = 2
-    max_counter_retrieval: int = 1  # NEW: allow one contradiction-aware re-retrieval
+    max_counter_retrieval: int = 1  
 
 class RunState(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -66,7 +65,7 @@ class RunState(BaseModel):
     status: str = "pending"
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
-    final_answer: Optional[str] = None  # NEW: human-readable conclusion
+    final_answer: Optional[str] = None  
     caps: RunCaps = Field(default_factory=RunCaps)
     thresholds: Dict[str, float] = Field(default_factory=lambda: {
         "tau_support": TAU_SUPPORT,
@@ -75,4 +74,4 @@ class RunState(BaseModel):
 
 if __name__ == "__main__":
     es = EvidenceSpan(id="s1", paper_id="p1", text="This is a sample evidence span text.")
-    print("Schemas OK ✅")
+    print("Schemas OK ")

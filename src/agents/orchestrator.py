@@ -1,8 +1,4 @@
 # src/agents/orchestrator.py
-"""
-Phase H: Orchestrator Agent (Upgraded)
-Coordinates: Retrieval → Claim Synthesis → Validation → Final Answer
-"""
 from typing import List, Dict, Any
 from datetime import datetime
 import traceback
@@ -35,7 +31,6 @@ class PipelineOrchestrator:
         )
 
         try:
-            # === STEP 1: RETRIEVAL ===
             print(" Phase 1: INITIAL RETRIEVAL")
             run_state.logs.append({
                 "timestamp": datetime.now().isoformat(),
@@ -61,7 +56,6 @@ class PipelineOrchestrator:
                 self.run_history.append(run_state)
                 return run_state
 
-            # === STEP 2: CLAIM SYNTHESIS ===
             print("\n Phase 2: CLAIM SYNTHESIS (LLM+fallback)")
             run_state.logs.append({
                 "timestamp": datetime.now().isoformat(),
@@ -91,7 +85,6 @@ class PipelineOrchestrator:
                 self.run_history.append(run_state)
                 return run_state
 
-            # === STEP 3: VALIDATION (single pass, no counter-retrieval) ===
             print("\n Phase 3: VALIDATION")
             run_state.logs.append({
                 "timestamp": datetime.now().isoformat(),
@@ -111,8 +104,6 @@ class PipelineOrchestrator:
             for i, verdict in enumerate(verdicts, 1):
                 print(f"     Verdict {i}: {verdict.label.value} "
                       f"(support={verdict.support_score:.3f}, contra={verdict.contradiction_score:.3f})")
-
-            # === STEP 4: FINAL ANSWER ===
             print("\nPhase 4: COMPOSING FINAL ANSWER")
             try:
                 run_state.final_answer = compose_final_answer(
@@ -120,10 +111,10 @@ class PipelineOrchestrator:
                     run_state.claims, 
                     run_state.verdicts
                 )
-                print("   ✓ Final answer composed")
+                print(" ✓ Final answer composed")
                 print(f"\n{run_state.final_answer}\n")
             except Exception as answer_error:
-                print(f"   ⚠️  Failed to compose final answer: {answer_error}")
+                print(f" Failed to compose final answer: {answer_error}")
                 run_state.final_answer = "Analysis complete. See detailed claims and verdicts below."
             
             run_state.status = "completed_success"
@@ -134,12 +125,12 @@ class PipelineOrchestrator:
             })
             
             print(f"{'='*80}")
-            print("✅ Enhanced pipeline completed successfully")
+            print(" Enhanced pipeline completed successfully")
             print(f"{'='*80}\n")
 
         except Exception as e:
             print(f"\n{'='*80}")
-            print(f"❌ ERROR in orchestrator: {type(e).__name__}: {e}")
+            print(f"ERROR in orchestrator: {type(e).__name__}: {e}")
             print(f"{'='*80}")
             traceback.print_exc()
             
@@ -175,8 +166,6 @@ class PipelineOrchestrator:
             })
         return history
 
-
-# Global orchestrator instance
 orchestrator = PipelineOrchestrator()
 
 

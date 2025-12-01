@@ -1,4 +1,4 @@
-# src/services/llm.py
+
 from __future__ import annotations
 import os
 import json
@@ -6,7 +6,6 @@ import time
 import logging
 from typing import Any, Dict, Optional, List
 
-# Load .env if present
 try:
     from dotenv import load_dotenv
     load_dotenv(override=False)
@@ -15,18 +14,10 @@ except Exception:
 
 logger = logging.getLogger(__name__)
 
-# --- MODEL SELECTION --------------------------------------------------------
-# Using Claude 3.5 Haiku - the cheapest model that's still very capable
-# Cost: $0.80 per million input tokens, $4.00 per million output tokens
-# 
-# If you want to override, set ANTHROPIC_MODEL in .env
-# Example: ANTHROPIC_MODEL=claude-3-5-sonnet-20241022
-# ----------------------------------------------------------------------------
 
 DEFAULT_MODEL = "claude-3-5-haiku-20241022"
 
 def _anthropic_client():
-    """Return Anthropic client if key present, else None."""
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         logger.warning("[LLM] ANTHROPIC_API_KEY not found in environment")
@@ -39,7 +30,7 @@ def _anthropic_client():
         return None
 
 def _content_to_text(blocks: List[Any]) -> str:
-    """Extract concatenated text from Anthropic content blocks."""
+    
     parts: List[str] = []
     for b in blocks or []:
         txt = getattr(b, "text", None)
@@ -64,25 +55,20 @@ def llm_json(
     max_tokens: Optional[int] = None,
     temperature: float = 0.0
 ) -> Optional[Dict[str, Any]]:
-    """
-    Call Claude 3.5 Haiku (cheapest model), expect STRICT JSON.
-    Returns None if all attempts fail or JSON is invalid.
-    """
+    
     client = _anthropic_client()
     if client is None:
         logger.warning("[LLM] Client unavailable")
         return None
 
-    # Use env override or default to cheap limits
     model_name = os.environ.get("ANTHROPIC_MODEL", DEFAULT_MODEL)
     
-    # Allow token cap override via env (to control cost)
     try:
         env_cap = int(os.environ.get("LLM_MAX_TOKENS", "0"))
     except ValueError:
         env_cap = 0
     if max_tokens is None:
-        max_tokens = env_cap if env_cap > 0 else 800  # Increased for better claims
+        max_tokens = env_cap if env_cap > 0 else 800  
 
     logger.info("[LLM] Using model: %s (max_tokens=%d)", model_name, max_tokens)
 
@@ -98,7 +84,7 @@ def llm_json(
             text = _content_to_text(msg.content)
             cleaned = _strip_fences(text)
             
-            # Log raw response for debugging
+            
             logger.debug("[LLM] Raw response (first 200 chars): %s", cleaned[:200])
             
             try:
@@ -118,6 +104,5 @@ def llm_json(
     return None
 
 if __name__ == "__main__":
-    # Smoketest: should print a JSON dict if credentials work
     js = llm_json('Return {"ok": true} exactly.', system="Output STRICT JSON only.", max_retries=0)
     print("SMOKETEST:", js)

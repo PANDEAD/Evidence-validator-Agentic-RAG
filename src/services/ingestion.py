@@ -7,10 +7,10 @@ from typing import Iterable, List, Tuple
 
 import faiss
 import numpy as np
-import fitz  # PyMuPDF
+import fitz  
 from sentence_transformers import SentenceTransformer
 
-# ---- Paths
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PDF_DIR = REPO_ROOT / "data" / "pdfs"
 INDEX_DIR = REPO_ROOT / "data" / "indices"
@@ -18,13 +18,13 @@ INDEX_DIR.mkdir(parents=True, exist_ok=True)
 FAISS_PATH = INDEX_DIR / "faiss.index"
 SQLITE_PATH = INDEX_DIR / "meta.sqlite"
 
-# ---- Tunables (safer defaults for laptops)
-EMB_MODEL_NAME = "BAAI/bge-base-en-v1.5"     # lighter than *large*
-BATCH_SIZE = 16                               # keep small on CPU
-CHUNK_SIZE = 3000                             # ~850–900 tokens proxy
+
+EMB_MODEL_NAME = "BAAI/bge-base-en-v1.5"     
+BATCH_SIZE = 16                              
+CHUNK_SIZE = 3000                             
 CHUNK_OVERLAP = 500
-MAX_PDFS = None                               # set like 3 while testing (or None)
-MAX_PAGES_PER_PDF = None                      # e.g., 8 while testing
+MAX_PDFS = None                               
+MAX_PAGES_PER_PDF = None                     
 
 def read_pdf_texts(pdf_path: Path) -> List[Tuple[int, str]]:
     texts: List[Tuple[int, str]] = []
@@ -78,7 +78,7 @@ def ensure_sqlite() -> sqlite3.Connection:
 def build_or_load_index(dim: int) -> faiss.Index:
     if FAISS_PATH.exists():
         return faiss.read_index(str(FAISS_PATH))
-    return faiss.IndexFlatIP(dim)  # cosine via normalized embeddings
+    return faiss.IndexFlatIP(dim)  
 
 def ingest_pdfs() -> None:
     pdfs = sorted([p for p in PDF_DIR.glob("*.pdf")])
@@ -94,7 +94,6 @@ def ingest_pdfs() -> None:
     conn = ensure_sqlite()
     cur = conn.cursor()
 
-    # Probe embedding dim cheaply (encode a tiny sample)
     probe_vec = model.encode(["probe"], normalize_embeddings=True)
     dim = int(probe_vec.shape[1])
     index = build_or_load_index(dim)
@@ -114,7 +113,7 @@ def ingest_pdfs() -> None:
             normalize_embeddings=True,
         ).astype(np.float32)
         index.add(embs)
-        faiss.write_index(index, str(FAISS_PATH))  # persist incrementally
+        faiss.write_index(index, str(FAISS_PATH))  
         cur.executemany(
             "INSERT INTO spans (id, paper_id, section, text, doi, page) VALUES (?, ?, ?, ?, ?, ?)",
             [(sid, pid, sec, txt, None, pg) for (sid, pid, sec, txt, pg) in batch_rows],
@@ -132,14 +131,14 @@ def ingest_pdfs() -> None:
                 span_id = str(uuid.uuid4())
                 batch_rows.append((span_id, paper_id, section, chunk, page))
                 batch_texts.append(chunk)
-                if len(batch_texts) >= 128:   # flush frequently to cap memory
+                if len(batch_texts) >= 128:   
                     flush_batch()
-        # flush remaining
+        
         flush_batch()
     finally:
         conn.close()
 
-    print(f"✅ Ingestion complete → {FAISS_PATH.name}, {SQLITE_PATH.name} | spans: {total_spans}")
+    print(f"Ingestion complete → {FAISS_PATH.name}, {SQLITE_PATH.name} | spans: {total_spans}")
 
 if __name__ == "__main__":
     ingest_pdfs()

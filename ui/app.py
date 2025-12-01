@@ -4,10 +4,9 @@ import streamlit as st
 
 import os, sys
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-sys.path.insert(0, ROOT)             # repo root
-sys.path.insert(0, os.path.join(ROOT, 'src'))  # src/ package
+sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, 'src'))
 
-#sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 BACKEND_URL = "http://127.0.0.1:8000"
 
 try:
@@ -21,29 +20,14 @@ st.set_page_config(page_title="Scientific Evidence Analyzer", layout="wide")
 st.title("Scientific Evidence Analyzer")
 st.markdown("*Intelligent research assistant for diabetes and insulin studies*")
 
-st.sidebar.markdown("### Try asking:")
-suggested_questions = [
-    "What causes insulin resistance?",
-    "How does obesity relate to diabetes?",
-    "What are the mechanisms of insulin action?",
-    "What factors influence insulin synthesis?",
-    "How prevalent is type 2 diabetes globally?",
-    "What role does insulin play in chronic disease?"
-]
-for q in suggested_questions:
-    if st.sidebar.button(f"{q}", key=f"suggest_{hash(q)}", use_container_width=True):
-        st.session_state.suggested_question = q
 
-page = st.sidebar.selectbox("Navigation", ["Search", "Analyze", "Results"])
+page = st.sidebar.selectbox("Navigation", ["Search", "Analyze"])
 
 if page == "Search":
     st.header("Evidence Search")
     with st.form("search_form"):
-        default_question = st.session_state.get('suggested_question', '')
-        question = st.text_input("Enter your research question:", value=default_question)
+        question = st.text_input("Enter your research question:")
         search_btn = st.form_submit_button("Search Evidence", use_container_width=True)
-        if search_btn and 'suggested_question' in st.session_state:
-            del st.session_state['suggested_question']
 
     if search_btn and question:
         with st.spinner("Retrieving evidence... (first run may load models)"):
@@ -71,19 +55,16 @@ if page == "Search":
 elif page == "Analyze":
     st.header("Intelligent Analysis")
     with st.form("run_form"):
-        default_question = st.session_state.get('suggested_question', '')
-        run_question = st.text_input("Research question for full analysis:", value=default_question)
+        run_question = st.text_input("Research question for full analysis:")
         with st.expander("Advanced Options"):
             max_claims = st.slider("Maximum claims to generate", 1, 3, 2)
             retrieval_k = st.slider("Evidence spans to retrieve", 5, 20, 12)
         run_btn = st.form_submit_button("Start Full Analysis", use_container_width=True)
-        if run_btn and 'suggested_question' in st.session_state:
-            del st.session_state['suggested_question']
 
     if run_btn and run_question:
         progress_bar = st.progress(0)
         status_text = st.empty()
-        status_text.text("🚀 Starting pipeline...")
+        status_text.text(" Starting pipeline...")
         progress_bar.progress(10)
         with st.spinner("Running full pipeline..."):
             try:
@@ -109,7 +90,6 @@ elif page == "Analyze":
                     st.markdown(final_answer)
                 else:
                     st.info("No final answer was produced. Check claims & validations below.")
-
 
                 if run_state.get('claims'):
                     st.subheader("Research Insights")
@@ -174,10 +154,6 @@ elif page == "Analyze":
                 progress_bar.progress(0); status_text.text("")
                 st.error(f"Unexpected error: {e}")
                 st.exception(e)
-
-elif page == "Results":
-    st.header("Analysis Results")
-    st.info("Export coming soon")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("**System Status**")
